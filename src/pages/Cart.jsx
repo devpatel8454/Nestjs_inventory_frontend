@@ -1,12 +1,15 @@
 import { useCart } from '../context/CartContext';
 import { useNavigate } from 'react-router-dom';
-import { ShoppingBag, ArrowRight, X, Trash2, Loader2 } from 'lucide-react';
-import { useState } from 'react';
+import { ShoppingBag, ArrowRight, X, Trash2, Loader2, CheckSquare, Square } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { createOrder } from '../api/api';
 
 const Cart = () => {
     const { cart, loading, removeItem } = useCart();
     const navigate = useNavigate();
     const [removingItem, setRemovingItem] = useState(null);
+    const [selectedIds, setSelectedIds] = useState(() => new Set());
+    const [placing, setPlacing] = useState(false);
 
     // Safely get price (some backends nest price under product)
     const getItemPrice = (it) => {
@@ -32,6 +35,47 @@ const Cart = () => {
     const handleCheckout = () => {
         if (cart && cart.id) {
             navigate(`/invoice/${cart.id}`);
+        }
+    };
+
+    const toggleItem = (lineId) => {
+        setSelectedIds(prev => {
+            const next = new Set(prev);
+            if (next.has(lineId)) next.delete(lineId); else next.add(lineId);
+            return next;
+        });
+    };
+
+    const allSelectableIds = useMemo(() => new Set((cart?.items || []).map(it => it.id)), [cart]);
+    const allSelected = useMemo(() => allSelectableIds.size > 0 && [...allSelectableIds].every(id => selectedIds.has(id)), [allSelectableIds, selectedIds]);
+    const selectedItems = useMemo(() => (cart?.items || []).filter(it => selectedIds.has(it.id)), [cart, selectedIds]);
+
+    const selectedTotals = useMemo(() => {
+        const qty = selectedItems.reduce((acc, it) => acc + (it.quantity || 0), 0);
+        const price = selectedItems.reduce((total, item) => total + getItemPrice(item) * (item.quantity || 0), 0);
+        return { qty, price };
+    }, [selectedItems]);
+
+    const toggleAll = () => {
+        setSelectedIds(prev => {
+            if (allSelected) return new Set();
+            return new Set(allSelectableIds);
+        });
+    };
+
+    const handlePlaceOrder = async () => {
+        if (!cart?.id || selectedItems.length === 0) return;
+        try {
+            setPlacing(true);
+            const itemsPayload = selectedItems.map(it => ({ productId: it.product?.id ?? it.productid ?? it.id, quantity: it.quantity || 1 }));
+            await createOrder(cart.id, itemsPayload);
+            // Navigate to orders page so user can see the created order
+            navigate('/orders');
+        } catch (e) {
+            console.error('Failed to place order', e);
+            alert(e?.response?.data?.message || e.message || 'Failed to place order');
+        } finally {
+            setPlacing(false);
         }
     };
 
@@ -69,10 +113,24 @@ const Cart = () => {
             <div className="max-w-4xl mx-auto">
                 <h1 className="text-3xl font-bold text-gray-900 mb-8">Shopping Cart</h1>
                 <div className="bg-white shadow-lg rounded-xl overflow-hidden border border-gray-100">
+                    <div className="px-6 py-4 flex items-center justify-between bg-gray-50 border-b">
+                        <div className="flex items-center gap-2">
+                            <button onClick={toggleAll} className="p-2 rounded hover:bg-white border">
+                                {allSelected ? <CheckSquare className="w-5 h-5 text-primary-600" /> : <Square className="w-5 h-5 text-gray-500" />}
+                            </button>
+                            <span className="text-sm text-gray-700">Select all</span>
+                        </div>
+                        <div className="text-sm text-gray-600">
+                            Selected: <span className="font-medium text-gray-900">{selectedItems.length}</span> item(s)
+                        </div>
+                    </div>
                     <ul className="divide-y divide-gray-200">
                         {cart.items.map((item, index) => (
                             <li key={item.id || index} className="px-6 py-5 grid grid-cols-12 gap-4 items-center hover:bg-gray-50 transition-colors group">
                                 <div className="col-span-12 sm:col-span-8 flex items-center">
+                                    <button onClick={() => toggleItem(item.id)} className="mr-4 p-2 rounded border hover:bg-white">
+                                        {selectedIds.has(item.id) ? <CheckSquare className="w-5 h-5 text-primary-600" /> : <Square className="w-5 h-5 text-gray-500" />}
+                                    </button>
                                     <div className="h-20 w-20 flex-shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-50 flex items-center justify-center">
                                         {item.product?.image || item.image ? (
                                             <img src={item.product?.image || item.image} alt={item.product?.title || item.name || 'Product'} className="h-full w-full object-cover" />
@@ -117,6 +175,9 @@ const Cart = () => {
                             <div className="text-xl font-bold text-gray-900">
                                 Total: <span className="text-green-600 tabular-nums">${ totalPrice.toFixed(2) }</span>
                             </div>
+                            <div className="text-sm text-gray-600">
+                                Selected Total: <span className="text-gray-900 tabular-nums font-medium">${ selectedTotals.price.toFixed(2) }</span> ({selectedTotals.qty} items)
+                            </div>
                         </div>
                         <div className="flex flex-col sm:flex-row space-y-3 sm:space-y-0 sm:space-x-4 w-full sm:w-auto">
                             <button
@@ -124,6 +185,20 @@ const Cart = () => {
                                 className="w-full sm:w-auto inline-flex items-center justify-center px-6 py-3 border border-gray-300 text-base font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 transition-all"
                             >
                                 Continue Shopping
+                            </button>
+                            <button
+                                onClick={handlePlaceOrder}
+                                disabled={placing || selectedItems.length === 0}
+                                className="w-full sm:w-auto inline-flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all disabled:opacity-50"
+                            >
+                                {placing ? (
+                                    <>
+                                        <Loader2 className="animate-spin -ml-1 mr-2 h-5 w-5 text-white" />
+                                        Placing Order...
+                                    </>
+                                ) : (
+                                    <>Place Order</>
+                                )}
                             </button>
                             <button
                                 onClick={handleCheckout}
